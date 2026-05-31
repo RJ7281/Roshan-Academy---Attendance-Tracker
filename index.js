@@ -31,7 +31,11 @@ document.addEventListener("DOMContentLoaded", () => {
     const enterBtn = document.getElementById("enter-btn");
     const saveBtn = document.getElementById("save-attendance");
     const togglePassBtn = document.getElementById("toggle-password");
-    const exportBtn = document.getElementById("export-btn");
+    
+    // EXPORT BUTTONS
+    const exportBtn = document.getElementById("export-btn");               // Daily
+    const exportWeeklyBtn = document.getElementById("export-weekly-btn");   // New Weekly Button
+    const exportMonthlyBtn = document.getElementById("export-monthly-btn"); // New Monthly Button
 
     // Initialize Date
     if (!dateInput.value) dateInput.valueAsDate = new Date();
@@ -115,7 +119,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    // --- CRUD: ADD STUDENT (Using New Input Fields) ---
+    // --- CRUD: ADD STUDENT ---
     window.addStudent = async () => {
         const rollInput = document.getElementById("new-roll");
         const nameInput = document.getElementById("new-name");
@@ -133,7 +137,6 @@ document.addEventListener("DOMContentLoaded", () => {
     };
 
     function attachRowEventListeners() {
-        // Change color live when dropdown changes
         document.querySelectorAll(".status-select").forEach((select) => {
             select.onchange = (e) => {
                 const isAbsent = e.target.value === "Absent";
@@ -143,7 +146,6 @@ document.addEventListener("DOMContentLoaded", () => {
             };
         });
 
-        // Delete Logic
         document.querySelectorAll(".delete-btn").forEach((btn) => {
             btn.onclick = async (e) => {
                 const key = e.target.closest("button").dataset.key;
@@ -180,7 +182,83 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     };
 
-    // --- EXPORT TO EXCEL ---
+    // --- NEW: HELPER RANGE EXPORT FOR WEEKLY & MONTHLY ---
+    async function exportHistoricalRange(type) {
+        const selectedStd = stdSelect.value;
+        const chosenDateStr = dateInput.value; 
+        if (!chosenDateStr) return alert("Please pick an anchor date first.");
+
+        const anchorDate = new Date(chosenDateStr);
+        const targetDates = [];
+
+        if (type === 'weekly') {
+            // Generates the trailing 7 days leading up to the selected date
+            for (let i = 6; i >= 0; i--) {
+                const target = new Date(anchorDate);
+                target.setDate(anchorDate.getDate() - i);
+                targetDates.push(target.toISOString().split('T')[0]);
+            }
+        } else if (type === 'monthly') {
+            // Generates every calendar day for the chosen date's specific month
+            const year = anchorDate.getFullYear();
+            const month = anchorDate.getMonth(); 
+            const daysInMonth = new Date(year, month + 1, 0).getDate();
+            
+            for (let day = 1; day <= daysInMonth; day++) {
+                const dayString = String(day).padStart(2, '0');
+                const monthString = String(month + 1).padStart(2, '0');
+                targetDates.push(`${year}-${monthString}-${dayString}`);
+            }
+        }
+
+        try {
+            // Fetch student data and all historic logs for this class standard
+            const [studentSnap, archiveSnap] = await Promise.all([
+                get(ref(db, `students/${selectedStd}`)),
+                get(ref(db, `attendance/${selectedStd}`))
+            ]);
+
+            const students = studentSnap.val() || {};
+            const attendanceHistory = archiveSnap.val() || {};
+
+            if (Object.keys(students).length === 0) {
+                return alert("No students found in this standard to compile a report.");
+            }
+
+            // Create Excel row structures mapping dates dynamically into separate columns
+            const structuredRows = Object.keys(students).map(studentKey => {
+                const info = students[studentKey];
+                const excelRow = {
+                    "Roll No": info.rollNo,
+                    "Student Name": info.name
+                };
+
+                // Append columns dynamically for each date generated above
+                targetDates.forEach(dateStr => {
+                    const dayLogs = attendanceHistory[dateStr] || {};
+                    excelRow[dateStr] = dayLogs[studentKey] || "-"; // Defaults to dash if day log missing
+                });
+
+                return excelRow;
+            });
+
+            // Parse data matrix using SheetJS
+            const worksheet = XLSX.utils.json_to_sheet(structuredRows);
+            const workbook = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(workbook, worksheet, "Attendance Log");
+            
+            // Finalize download file matching type requested
+            XLSX.writeFile(workbook, `Attendance_Std${selectedStd}_${type}_Report_${chosenDateStr}.xlsx`);
+
+        } catch (err) {
+            console.error(err);
+            alert("Failed to build range report. Check network connection.");
+        }
+    }
+
+    // --- EXPORT EVENT HANDLERS ---
+    
+    // 1. Daily Export (Keeps your fast, localized DOM reader intact)
     exportBtn.onclick = () => {
         const dataForExcel = [];
         const rows = document.querySelectorAll("#attendance-body tr");
@@ -201,8 +279,18 @@ document.addEventListener("DOMContentLoaded", () => {
         const ws = XLSX.utils.json_to_sheet(dataForExcel);
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, "Attendance");
-        XLSX.writeFile(wb, `Attendance_Std${stdSelect.value}_${dateInput.value}.xlsx`);
+        XLSX.writeFile(wb, `Attendance_Std${stdSelect.value}_Daily_${dateInput.value}.xlsx`);
     };
+
+    // 2. Weekly Link
+    if (exportWeeklyBtn) {
+        exportWeeklyBtn.onclick = () => exportHistoricalRange('weekly');
+    }
+
+    // 3. Monthly Link
+    if (exportMonthlyBtn) {
+        exportMonthlyBtn.onclick = () => exportHistoricalRange('monthly');
+    }
 
     // UI Listeners
     stdSelect.onchange = renderStudents;
